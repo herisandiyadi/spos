@@ -17,13 +17,30 @@ import 'package:squadra_pos/refactor/data/models/transaction_smenu_detail/m_tran
 import 'package:squadra_pos/refactor/data/resources/local_storage.dart';
 import 'package:squadra_pos/refactor/domain/repositories/transactions/smenu/r_smenu.dart';
 import 'package:squadra_pos/refactor/presentation/routes/app_routes.dart';
-import 'package:squadra_pos/refactor/utils/constants.dart';
 import 'package:squadra_pos/refactor/utils/custom_dialog.dart';
 import 'package:squadra_pos/refactor/utils/custom_formatter.dart';
 import 'package:squadra_pos/refactor/utils/formatter_date.dart';
 
 class TransactionCheckOutSMController extends GetxController {
   TransactionCheckOutSMController(this.sMenuRepository, this.localStorage);
+
+  // === Checkout calculation state ===
+  final RxInt subTotAfterDisc = 0.obs;
+  final RxInt ppnDB = 0.obs;
+  final RxInt grandTotalFinal = 0.obs;
+
+  /// Call this to update all checkout calculation values
+  void updateCheckoutTotals({
+    required num subtotal,
+    required num discountValue,
+  }) {
+    // Subtotal after discount
+    subTotAfterDisc.value = (subtotal - discountValue).toInt();
+    // Calculate tax (ppn)
+    ppnDB.value = (subTotAfterDisc.value * taxPercent.value).ceil();
+    // Calculate grand total
+    grandTotalFinal.value = subTotAfterDisc.value + ppnDB.value;
+  }
 
   final SMenuRepository sMenuRepository;
   final LocalStorage localStorage;

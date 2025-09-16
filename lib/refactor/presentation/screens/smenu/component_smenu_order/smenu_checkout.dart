@@ -1,27 +1,99 @@
+import 'dart:convert';
+import 'dart:developer';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:get/get.dart';
 import 'package:squadra_pos/database/database_helper.dart';
+import 'package:squadra_pos/refactor/data/models/sql_lite/get/sqllite_discount/g_discount.dart';
 import 'package:squadra_pos/refactor/data/models/sql_lite/get/sqllite_tax/g_tax.dart';
+import 'package:squadra_pos/refactor/data/models/sql_lite/get/sqllite_transaction_detail/g_transaction_detail.dart';
 import 'package:squadra_pos/refactor/data/models/transaction_smenu_detail/m_transaction_sm_detail.dart';
+import 'package:squadra_pos/refactor/presentation/controllers/discount/discount_controller.dart';
+import 'package:squadra_pos/refactor/presentation/controllers/home/offline/c_order_offline.dart';
 import 'package:squadra_pos/refactor/presentation/controllers/home/smenu/c_transaction_sm_check_out.dart';
+import 'package:squadra_pos/refactor/presentation/controllers/home/smenu/c_transaction_sm_detail.dart';
 import 'package:squadra_pos/refactor/presentation/controllers/home/smenu/c_transaction_sm_order.dart';
 import 'package:squadra_pos/refactor/presentation/screens/smenu/component_smenu_order/component_smenu_checkout/payment_method_grid.dart';
+import 'package:squadra_pos/refactor/presentation/screens/smenu/component_smenu_order/discount_dialog.dart';
 import 'package:squadra_pos/refactor/utils/constants.dart';
 import 'package:squadra_pos/refactor/utils/custom_formatter.dart';
 
-class SMCheckoutPage extends StatelessWidget {
+class SMCheckoutPage extends StatefulWidget {
   SMCheckoutPage({super.key});
 
+  @override
+  State<SMCheckoutPage> createState() => _SMCheckoutPageState();
+}
+
+class _SMCheckoutPageState extends State<SMCheckoutPage> {
   final args = Get.arguments as Map<String, dynamic>;
+
   final transactionSMOrderController = Get.find<TransactionOrderSMController>();
+  OrderOfflineController get transactionOrderOfflineController {
+    if (!Get.isRegistered<OrderOfflineController>()) {
+      Get.put(OrderOfflineController());
+    }
+    return Get.find<OrderOfflineController>();
+  }
+
+  final transactionDetailSMController =
+      Get.find<TransactionDetailSMController>();
+
   final transactionCheckOutSMController =
       Get.find<TransactionCheckOutSMController>();
+  final discountController = Get.put(DiscountController());
+  // Tambahkan Rx<num> untuk subtotal
   final ValueNotifier<bool> isCheckedRound = ValueNotifier(false);
+
   final dbHelper = DatabaseHelper();
+  late String transactionNumber;
+
   double taxPercent = 0.0;
+
   String taxName = '';
+
+  List discountOnTrans = [];
+  List discountOnDetail = [];
+  num discountTotals = 0;
+  num grandTotalBeforeTax = 0;
+  num tax = 0;
+  num grandTotalAfterTax = 0;
+  num subTotal = 0;
+  var transDetail = <TransactionDetailLiteModel>[];
+  var discount = <DiscountLiteModel>[];
+  int masterDiscountID = 0;
+  int qtyDiscount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    transactionNumber = args["transactionNumber"];
+
+    // Listen to discount changes and update checkout totals in real time
+    ever<num>(discountController.discountValue, (discountValue) {
+      // header is not available in initState, so we use a workaround:
+      // Use WidgetsBinding to ensure context is available
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final header = Get.arguments['header'];
+        final subtotal = header?.subTotal ?? 0;
+        transactionCheckOutSMController.updateCheckoutTotals(
+          subtotal: subtotal,
+          discountValue: discountValue,
+        );
+      });
+    });
+  }
+
+  Future<void> _setDiscount(discountTotal, discountOnTrans) async {
+    await dbHelper.updateTransactionDiscount(
+        transactionNumber, discountTotal.toInt(), jsonEncode(discountOnTrans));
+
+    // widget.callBack.call();
+
+    Get.back();
+  }
 
   Future<double> _getTax() async {
     final result = await dbHelper.getTax();
@@ -32,6 +104,23 @@ class SMCheckoutPage extends StatelessWidget {
     // taxName =
     // result.isNotEmpty ? TaxLiteModel.fromJson(result.first).taxName : '-';
     return taxPercent.toDouble();
+  }
+
+  Future<void> _updateDiscount() async {
+    final result =
+        await dbHelper.getTransSpec(transactionNumber: transactionNumber);
+    double taxSettings = transactionOrderOfflineController.taxPercent.value;
+    debugPrint("asd: ${jsonEncode(result)}");
+    // log("SM ORDER DATA TOTAL $transactionNumber");
+
+    setState(() {
+      discountOnTrans = jsonDecode(result.first['discountOnTrans']);
+      discountTotals = result.first['discountTotal'];
+
+      grandTotalBeforeTax = subTotal - discountTotals;
+      tax = grandTotalBeforeTax * taxSettings;
+      grandTotalAfterTax = grandTotalBeforeTax + tax;
+    });
   }
 
   @override
@@ -70,15 +159,21 @@ class SMCheckoutPage extends StatelessWidget {
           final Rxn<TransactionSMHeaderData> header =
               Rxn<TransactionSMHeaderData>();
           header.value = args['header'] as TransactionSMHeaderData;
-
-          int ppnDB = ((header.value?.subTotal ?? 0) *
-                  (transactionCheckOutSMController.taxPercent.value))
-              .ceil();
-          header.value = header.value?.copyWith(ppn: ppnDB);
+          // Update checkout totals in controller
+          transactionCheckOutSMController.updateCheckoutTotals(
+            subtotal: header.value?.subTotal ?? 0,
+            discountValue: discountController.discountValue.value,
+          );
+          // Optionally update header.value if needed elsewhere
           header.value = header.value?.copyWith(
-              grandTotalFinal: ((header.value?.grandTotalFinal ?? 0) + ppnDB));
-          print(ppnDB);
-          print(header.value?.grandTotalFinal ?? 0);
+            subTotal: header.value?.subTotal,
+            ppn: transactionCheckOutSMController.ppnDB.value,
+            grandTotalFinal:
+                transactionCheckOutSMController.grandTotalFinal.value,
+          );
+          print("ppnDB ${transactionCheckOutSMController.ppnDB.value}");
+          print(
+              "TOTAL DUE ${transactionCheckOutSMController.grandTotalFinal.value} --- ${discountController.discountValue.value}");
           final List<TransactionSMDetailData> rawDetail =
               args['detail'] as List<TransactionSMDetailData>;
           final RxList<TransactionSMDetailData> detail = RxList.of(rawDetail);
@@ -612,7 +707,36 @@ class SMCheckoutPage extends StatelessWidget {
                                       ),
                                       const SizedBox(height: 20),
                                       ElevatedButton(
-                                        onPressed: null,
+                                        onPressed: () async {
+                                          // _updateDiscount();
+                                          // // widget.callBack.call();
+                                          // await _discountList();
+                                          await showDiscountDialog(
+                                            context,
+                                            discountController,
+                                            1,
+                                            subTotal: header.value?.subTotal,
+                                            onSelect: (data) {
+                                              if (data == null) {
+                                                // Remove discount
+                                                discountController
+                                                    .removeSelectedDiscount();
+                                                log("DISCDATA $data (discount removed)");
+                                                setState(() {});
+                                              } else {
+                                                // Apply discount
+                                                discountController
+                                                    .selectDiscount(
+                                                        data.masterDiscountID,
+                                                        subtotal: header
+                                                            .value?.subTotal
+                                                            ?.toDouble());
+                                                log("DISCDATA $data");
+                                                setState(() {});
+                                              }
+                                            },
+                                          );
+                                        },
                                         style: ElevatedButton.styleFrom(
                                           elevation: 0,
                                           minimumSize: Size(150, 28.sp),
@@ -799,272 +923,276 @@ class SMCheckoutPage extends StatelessWidget {
                                 ),
                               ),
                         // :: Footer
-                        Column(
-                          children: [
-                            Padding(
-                              padding:
-                                  const EdgeInsets.fromLTRB(16, 16, 16, 16),
-                              child: Column(
-                                children: [
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text(
-                                        'Subtotal',
-                                        style: TextStyle(
-                                          fontSize: 12.sp,
-                                          fontFamily: "UbuntuBold",
-                                          color: customHeadingText,
+                        // :: Footer
+                        SingleChildScrollView(
+                          child: Column(
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                                child: Column(
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'Subtotal',
+                                          style: TextStyle(
+                                            fontSize: 12.sp,
+                                            fontFamily: "UbuntuBold",
+                                            color: customHeadingText,
+                                          ),
                                         ),
-                                      ),
-                                      Text(
-                                        numberFormat('IDR',
-                                                header.value?.subTotal ?? 0)
-                                            .toString(),
-                                        style: TextStyle(
-                                          fontSize: 12.sp,
-                                          fontFamily: "UbuntuBold",
-                                          color: customHeadingText,
+                                        Text(
+                                          numberFormat('IDR',
+                                                  header.value?.subTotal ?? 0)
+                                              .toString(),
+                                          style: TextStyle(
+                                            fontSize: 12.sp,
+                                            fontFamily: "UbuntuBold",
+                                            color: customHeadingText,
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text(
-                                        'PPN',
-                                        style: TextStyle(
-                                          fontSize: 12.sp,
-                                          fontFamily: "UbuntuBold",
-                                          color: customHeadingText,
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'Discount',
+                                          style: TextStyle(
+                                            fontSize: 12.sp,
+                                            fontFamily: "UbuntuBold",
+                                            color: customHeadingText,
+                                          ),
                                         ),
-                                      ),
-                                      Text(
-                                        numberFormat(
-                                                'IDR', header.value?.ppn ?? 0)
-                                            .toString(),
-                                        style: TextStyle(
-                                          fontSize: 12.sp,
-                                          fontFamily: "UbuntuBold",
-                                          color: customHeadingText,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  // taxSettings > 0 ?  Column(
-                                  //   children: [
-                                  //     const Divider(),
-                                  //     Row(
-                                  //       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  //       children: [
-                                  //         Text('Total Before Tax',
-                                  //           style: TextStyle(
-                                  //             fontSize: 12.sp,
-                                  //             fontFamily: "UbuntuBold",
-                                  //             color:customHeadingText,
-                                  //           ),
-                                  //         ),
-                                  //         Text(numberFormat('IDR', grandTotalBeforeTaxV).toString(),
-                                  //           style: TextStyle(
-                                  //             fontSize: 12.sp,
-                                  //             fontFamily: "UbuntuBold",
-                                  //             color:customHeadingText,
-                                  //           ),
-                                  //         ),
-                                  //       ],
-                                  //     ),
-                                  //     const SizedBox(height: 10),
-                                  //     Row(
-                                  //       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  //       children: [
-                                  //         Text('Tax (PB1)',
-                                  //           style: TextStyle(
-                                  //             fontSize: 12.sp,
-                                  //             fontFamily: "UbuntuBold",
-                                  //             color: customHeadingText,
-                                  //           ),
-                                  //         ),
-                                  //         Text(numberFormat('IDR', taxV).toString(),
-                                  //           style: TextStyle(
-                                  //             fontSize: 12.sp,
-                                  //             fontFamily: "UbuntuBold",
-                                  //             color: customHeadingText,
-                                  //           ),
-                                  //         ),
-                                  //       ],
-                                  //     ),
-                                  //   ],
-                                  // ) : const SizedBox.shrink(),
-
-                                  const Divider(),
-
-                                  Row(
-                                    children: [
-                                      Padding(
-                                        padding: EdgeInsets.only(left: 0),
-                                        child: Row(
-                                          children: [
-                                            Transform.scale(
-                                              scale: 0.8,
-                                              child:
-                                                  ValueListenableBuilder<bool>(
-                                                valueListenable: isCheckedRound,
-                                                builder: (context, value, _) {
-                                                  return Checkbox(
-                                                    value: value,
-                                                    onChanged: (newValue) {
-                                                      isCheckedRound.value =
-                                                          newValue ?? false;
-
-                                                      if (newValue == false) {
-                                                        header.value = header.value?.copyWith(
-                                                            grandTotalFinal: (header
-                                                                        .value
-                                                                        ?.grandTotalFinal ??
-                                                                    0) -
-                                                                (header.value
-                                                                        ?.rounding ??
-                                                                    0));
-                                                        header.value = header
-                                                            .value
-                                                            ?.copyWith(
-                                                                rounding: 0);
-                                                      } else {
-                                                        print('unchecked');
-                                                        header.value = header.value?.copyWith(
-                                                            rounding: (bulatkanKe500(
-                                                                    header.value
-                                                                            ?.grandTotalFinal ??
-                                                                        0) -
-                                                                (header.value
-                                                                        ?.grandTotalFinal ??
-                                                                    0)));
-                                                        header.value = header
-                                                            .value
-                                                            ?.copyWith(
-                                                                grandTotalFinal:
-                                                                    bulatkanKe500(
-                                                                        header.value?.grandTotalFinal ??
-                                                                            0));
-                                                      }
-                                                    },
-                                                    materialTapTargetSize:
-                                                        MaterialTapTargetSize
-                                                            .shrinkWrap,
-                                                  );
-                                                },
-                                              ),
-                                            ),
-                                            Text(
-                                              'Rounding',
+                                        Obx(() => Text(
+                                              numberFormat(
+                                                      'IDR',
+                                                      discountController
+                                                          .discountValue.value)
+                                                  .toString(),
                                               style: TextStyle(
                                                 fontSize: 12.sp,
                                                 fontFamily: "UbuntuBold",
                                                 color: customHeadingText,
                                               ),
-                                            ),
-                                          ],
+                                            )),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'PPN',
+                                          style: TextStyle(
+                                            fontSize: 12.sp,
+                                            fontFamily: "UbuntuBold",
+                                            color: customHeadingText,
+                                          ),
                                         ),
-                                      ),
-                                      Spacer(),
-                                      ValueListenableBuilder<bool>(
-                                        valueListenable: isCheckedRound,
-                                        builder: (context, isChecked, _) {
+                                        Obx(() {
+                                          final ppnValue =
+                                              transactionCheckOutSMController
+                                                  .ppnDB.value;
                                           return Text(
-                                            numberFormat(
-                                                    'IDR',
-                                                    !isChecked
-                                                        ? 0
-                                                        : header
-                                                            .value?.rounding)
+                                            numberFormat('IDR', ppnValue ?? 0)
                                                 .toString(),
                                             style: TextStyle(
-                                              fontSize: 22,
+                                              fontSize: 12.sp,
                                               fontFamily: "UbuntuBold",
-                                              color: primaryColor,
+                                              color: customHeadingText,
                                             ),
                                           );
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text(
-                                        'Total Due',
-                                        style: TextStyle(
-                                          fontSize: 12.sp,
-                                          fontFamily: "UbuntuBold",
-                                          color: customHeadingText,
+                                        }),
+                                      ],
+                                    ),
+                                    const Divider(),
+                                    Row(
+                                      children: [
+                                        Padding(
+                                          padding: EdgeInsets.only(left: 0),
+                                          child: Row(
+                                            children: [
+                                              Transform.scale(
+                                                scale: 0.8,
+                                                child: ValueListenableBuilder<
+                                                    bool>(
+                                                  valueListenable:
+                                                      isCheckedRound,
+                                                  builder: (context, value, _) {
+                                                    return Checkbox(
+                                                      value: value,
+                                                      onChanged: (newValue) {
+                                                        isCheckedRound.value =
+                                                            newValue ?? false;
+
+                                                        if (newValue == false) {
+                                                          header.value = header.value?.copyWith(
+                                                              grandTotalFinal: (header
+                                                                          .value
+                                                                          ?.grandTotalFinal ??
+                                                                      0) -
+                                                                  (header.value
+                                                                          ?.rounding ??
+                                                                      0));
+                                                          header.value = header
+                                                              .value
+                                                              ?.copyWith(
+                                                                  rounding: 0);
+                                                        } else {
+                                                          print('unchecked');
+                                                          header.value = header.value?.copyWith(
+                                                              rounding: (bulatkanKe500(header
+                                                                          .value
+                                                                          ?.grandTotalFinal ??
+                                                                      0) -
+                                                                  (header.value
+                                                                          ?.grandTotalFinal ??
+                                                                      0)));
+                                                          header.value = header
+                                                              .value
+                                                              ?.copyWith(
+                                                                  grandTotalFinal:
+                                                                      bulatkanKe500(
+                                                                          header.value?.grandTotalFinal ??
+                                                                              0));
+                                                        }
+                                                      },
+                                                      materialTapTargetSize:
+                                                          MaterialTapTargetSize
+                                                              .shrinkWrap,
+                                                    );
+                                                  },
+                                                ),
+                                              ),
+                                              Text(
+                                                'Rounding',
+                                                style: TextStyle(
+                                                  fontSize: 12.sp,
+                                                  fontFamily: "UbuntuBold",
+                                                  color: customHeadingText,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                      ),
-                                      ValueListenableBuilder<bool>(
-                                        valueListenable: isCheckedRound,
-                                        builder: (context, isChecked, _) {
-                                          return Text(
-                                            numberFormat(
-                                                    'IDR',
-                                                    !isChecked
-                                                        ? (header.value
-                                                                ?.grandTotalFinal ??
-                                                            0)
-                                                        : bulatkanKe500(header
-                                                                .value
-                                                                ?.grandTotalFinal ??
-                                                            0))
-                                                .toString(),
-                                            style: TextStyle(
-                                              fontSize: 22,
-                                              fontFamily: "UbuntuBold",
-                                              color: primaryColor,
-                                            ),
+                                        Spacer(),
+                                        ValueListenableBuilder<bool>(
+                                          valueListenable: isCheckedRound,
+                                          builder: (context, isChecked, _) {
+                                            return Text(
+                                              numberFormat(
+                                                      'IDR',
+                                                      !isChecked
+                                                          ? 0
+                                                          : header
+                                                              .value?.rounding)
+                                                  .toString(),
+                                              style: TextStyle(
+                                                fontSize: 22,
+                                                fontFamily: "UbuntuBold",
+                                                color: primaryColor,
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          'Total Due',
+                                          style: TextStyle(
+                                            fontSize: 12.sp,
+                                            fontFamily: "UbuntuBold",
+                                            color: customHeadingText,
+                                          ),
+                                        ),
+                                        Obx(() {
+                                          final grandTotal =
+                                              transactionCheckOutSMController
+                                                  .grandTotalFinal.value;
+                                          return ValueListenableBuilder<bool>(
+                                            valueListenable: isCheckedRound,
+                                            builder: (context, isChecked, _) {
+                                              final total = !isChecked
+                                                  ? (grandTotal ?? 0)
+                                                  : transactionCheckOutSMController
+                                                      .bulatkanKe500(
+                                                          grandTotal ?? 0);
+                                              return Text(
+                                                numberFormat('IDR', total)
+                                                    .toString(),
+                                                style: TextStyle(
+                                                  fontSize: 22,
+                                                  fontFamily: "UbuntuBold",
+                                                  color: primaryColor,
+                                                ),
+                                              );
+                                            },
                                           );
+                                        }),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Container(
+                                      alignment: Alignment.center,
+                                      child: ElevatedButton(
+                                        style: ElevatedButton.styleFrom(
+                                          elevation: 0,
+                                          minimumSize: const Size(500, 0),
+                                          padding: EdgeInsets.symmetric(
+                                            vertical: 14.h,
+                                            horizontal: 20,
+                                          ),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(50),
+                                          ),
+                                          backgroundColor: primaryColor,
+                                        ),
+                                        onPressed: () async {
+                                          try {
+                                            await transactionSMOrderController
+                                                .handlePrintBill(
+                                                    detail, header);
+                                          } catch (e, stack) {
+                                            debugPrint(
+                                                "[ERROR] Exception in Print Bill button: $e\n$stack");
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(SnackBar(
+                                                content: Text(
+                                                    "Error: ${e.toString()}"),
+                                                backgroundColor: Colors.red,
+                                              ));
+                                            }
+                                          }
                                         },
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Container(
-                                    alignment: Alignment.center,
-                                    child: ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        elevation: 0,
-                                        minimumSize: const Size(500, 0),
-                                        padding: EdgeInsets.symmetric(
-                                          vertical: 14.h,
-                                          horizontal: 20,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(50),
-                                        ),
-                                        backgroundColor: primaryColor,
-                                      ),
-                                      onPressed: () async {
-                                        await transactionSMOrderController
-                                            .handlePrintBill(detail, header);
-                                      },
-                                      child: Text(
-                                        "Print Bill",
-                                        style: TextStyle(
-                                          fontSize: 10.sp,
-                                          fontFamily: 'UbuntuBold',
-                                          color: Colors.white,
+                                        child: Text(
+                                          "Print Bill",
+                                          style: TextStyle(
+                                            fontSize: 10.sp,
+                                            fontFamily: 'UbuntuBold',
+                                            color: Colors.white,
+                                          ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                          ],
-                        )
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),

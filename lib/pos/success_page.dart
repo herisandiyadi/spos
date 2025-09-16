@@ -132,7 +132,6 @@ class _SuccessPageState extends State<SuccessPage>
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
-
     return Scaffold(
       body: FutureBuilder<Map<String, dynamic>>(
         future: fetchTransaction(),
@@ -158,7 +157,6 @@ class _SuccessPageState extends State<SuccessPage>
             final grandTotalFinal = snapshot.data?['grandTotalFinal'] ?? '';
             final guestNumber = snapshot.data?['guestNumber'] ?? '';
             final transactionType = snapshot.data?['transactionType'] ?? '';
-
             return Row(
               children: [
                 Expanded(

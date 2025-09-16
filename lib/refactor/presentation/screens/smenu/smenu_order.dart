@@ -1,3 +1,4 @@
+import 'dart:developer';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -46,7 +47,8 @@ class _SMOrderPageState extends State<SMOrderPage> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
-
+    log("SM ORDER ${transactionDetailSMController
+        .transactionSMHeaderData.value?.transactionNumber}");
     return PopScope(
       canPop: false,
       child: Scaffold(
@@ -720,6 +722,11 @@ class _SMOrderPageState extends State<SMOrderPage> {
                                                 Get.toNamed(
                                                   RouteName.checkOutSM,
                                                   arguments: {
+                                                    'transactionNumber':
+                                                        transactionDetailSMController
+                                                            .transactionSMHeaderData
+                                                            .value
+                                                            ?.transactionNumber,
                                                     'cart_id':
                                                         transactionDetailSMController
                                                             .cartId.value,
